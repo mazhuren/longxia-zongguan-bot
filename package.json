@@ -1,0 +1,15 @@
+{
+  "name": "longxia-zhangguan-bot",
+  "version": "1.0.0",
+  "description": "综管员小助手 - 飞书群自动回复机器人",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
