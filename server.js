@@ -46,27 +46,29 @@ app.listen(PORT, () => {
 
 // ===== 路由 =====
 
-// 健康检查 + 飞书 URL 验证
-app.get('/', (req, res) => {
+// 健康检查 + 飞书 URL 验证（GET 处理根路径和 webhook 路径）
+const handleChallenge = (req, res) => {
   const challenge = req.query.challenge;
   if (challenge) {
     console.log('[url-verification] challenge:', challenge);
-    return res.send(challenge);
+    // 飞书 GET 验证：必须返回 JSON 格式 {challenge: 'xxx'}
+    return res.json({ challenge });
   }
   res.send('OK - 综管员小助手在线');
-});
+};
+app.get('/', handleChallenge);
+app.get('/feishu/event', handleChallenge);
 
-// 飞书事件回调
+// 飞书事件回调（POST 接收消息事件）
 app.post('/feishu/event', async (req, res) => {
   // 立即 ACK，飞书 3 秒超时
   res.json({ code: 0, msg: 'ok' });
 
   const body = req.body;
+  if (!body) return;
 
-  // URL 验证
+  // URL 验证（POST 模式，备用）
   if (body.type === 'url_verification') {
-    console.log('[url-verification] body.challenge:', body.challenge);
-    // 飞书 GET 验证时不会走这里（GET 走上面），但 POST 也支持
     return res.json({ challenge: body.challenge });
   }
 
