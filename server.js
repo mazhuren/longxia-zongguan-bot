@@ -1,11 +1,9 @@
 // ============================================================
-// 综管员小助手 - Render.com 部署版
+// 综管员小助手 - Render.com 部署版 (纯 Node http，无第三方依赖)
 // Author: HR Architect (飞书妙搭)
 // ============================================================
 
-const express = require('express');
-const app = express();
-app.use(express.json({ limit: '1mb' }));
+const http = require('http');
 
 // ----- 全局配置 -----
 const FEISHU_API = 'https://open.larkoffice.com/open-apis';
@@ -26,61 +24,86 @@ const MODULE_BP = {
 
 // 模块关键词
 const MODULE_KEYWORDS = {
-  NCC: ['入职', '异动', '离职', '合同', '花名册', 'NCC', '考勤机', '综管员换人'],
-  排班: ['排班', '班次', '考勤', '打卡', '工时', '上桌数', '人效', '健康证', '补卡', '日薪', '锁定'],
-  日薪: ['日薪小程序', '看台', '菜品提成', '提资'],
-  算薪: ['算薪', '工资', '薪资', '工资条', '工资单', '发薪', '薪酬'],
+  NCC: ['入职','异动','离职','合同','花名册','NCC','考勤机','综管员换人'],
+  排班: ['排班','班次','考勤','打卡','工时','上桌数','人效','健康证','补卡','日薪','锁定'],
+  日薪: ['日薪小程序','看台','菜品提成','提资'],
+  算薪: ['算薪','工资','薪资','工资条','工资单','发薪','薪酬'],
 };
 
-// 高风险关键词
-const HIGH_RISK = ['多少钱', '工资金额', '具体工资', '工伤', '解除', '竞业', '仲裁', '诉讼', '辞退', '开除'];
+const HIGH_RISK = ['多少钱','工资金额','具体工资','工伤','解除','竞业','仲裁','诉讼','辞退','开除'];
+const recentMessages = new Map();
 
-// 内存缓存：5 分钟闸门
-const recentMessages = new Map(); // chatId -> timestamp
-
-// ===== 启动 =====
+// ===== HTTP Server =====
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`[longxia-bot] 启动，端口 ${PORT}`);
-});
+const HOST = '0.0.0.0';
 
-// ===== 路由 =====
+const server = http.createServer((req, res) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
 
-// 健康检查 + 飞书 URL 验证（GET 处理根路径和 webhook 路径）
-const handleChallenge = (req, res) => {
-  const challenge = req.query.challenge;
-  if (challenge) {
-    console.log('[url-verification] challenge:', challenge);
-    // 飞书 GET 验证：必须返回 JSON 格式 {challenge: 'xxx'}
-    return res.json({ challenge });
-  }
-  res.send('OK - 综管员小助手在线');
-};
-app.get('/', handleChallenge);
-app.get('/feishu/event', handleChallenge);
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
 
-// 飞书事件回调（POST 接收消息事件）
-app.post('/feishu/event', async (req, res) => {
-  // 立即 ACK，飞书 3 秒超时
-  res.json({ code: 0, msg: 'ok' });
+  // URL 解析
+  const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  const body = req.body;
-  if (!body) return;
-
-  // URL 验证（POST 模式，备用）
-  if (body.type === 'url_verification') {
-    return res.json({ challenge: body.challenge });
-  }
-
-  // 消息事件
-  if (body?.header?.event_type === 'im.message.receive_v1') {
-    try {
-      await handleMessage(body.event);
-    } catch (e) {
-      console.error('[handleMessage] error:', e);
+  // 根路径：健康检查 + 飞书 GET challenge 验证
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+    const challenge = url.searchParams.get('challenge');
+    if (challenge) {
+      console.log('[challenge]', challenge);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ challenge }));
     }
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('OK - 综管员小助手在线');
   }
+
+  // 飞书事件 webhook
+  if (req.method === 'GET' && url.pathname === '/feishu/event') {
+    const challenge = url.searchParams.get('challenge');
+    if (challenge) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ challenge }));
+    }
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('OK');
+  }
+
+  if (req.method === 'POST' && url.pathname === '/feishu/event') {
+    // 立即 ACK（飞书 3 秒超时）
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ code: 0, msg: 'ok' }));
+
+    // 异步处理
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        if (data?.header?.event_type === 'im.message.receive_v1') {
+          handleMessage(data.event).catch(e => console.error('[handleMessage]', e));
+        } else if (data.type === 'url_verification') {
+          console.log('[url_verification]', data.challenge);
+        }
+      } catch (e) {
+        console.error('[parse error]', e);
+      }
+    });
+    return;
+  }
+
+  // 404
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not Found');
 });
+
+server.listen(PORT, HOST, () => {
+  console.log(`[longxia-bot] 启动 ${HOST}:${PORT}`);
+});
+
+// 全局错误兜底
+process.on('uncaughtException', (e) => console.error('[uncaught]', e));
+process.on('unhandledRejection', (e) => console.error('[unhandled]', e));
 
 // ===== 核心消息处理 =====
 async function handleMessage(event) {
@@ -88,7 +111,6 @@ async function handleMessage(event) {
   if (chat_type !== 'group') return;
   if (!message?.mentions?.length) return;
 
-  // 提取纯文本
   let text = (message.content?.text || '').trim();
   text = text.replace(/@_user_\d+\s*/g, '').trim();
   if (!text) return;
@@ -103,12 +125,11 @@ async function handleMessage(event) {
 
   // L1 闸门 2：模块识别
   const module = detectModule(text);
-  if (!module) return; // 不在 4 模块内，沉默
+  if (!module) return;
 
   // L1 闸门 3：高风险
   if (hasHighRisk(text)) {
-    await sendText(chat_id,
-      `⚠️ 您的问题涉及敏感信息（金额/工伤/解除/竞业等），已为您转人工。\n请联系对应的 BP 老师。`);
+    await sendText(chat_id, '⚠️ 您的问题涉及敏感信息（金额/工伤/解除/竞业等），已为您转人工。\n请联系对应的 BP 老师。');
     return;
   }
 
@@ -147,7 +168,7 @@ async function handleMessage(event) {
   await recordHandoff(chat_id, sender?.sender_id?.open_id, module, storeName, bp, text);
 }
 
-// ===== 模块识别 =====
+// ===== 工具函数 =====
 function detectModule(text) {
   for (const [mod, keywords] of Object.entries(MODULE_KEYWORDS)) {
     if (keywords.some(kw => text.includes(kw))) return mod;
@@ -172,7 +193,7 @@ function check5MinGate(chatId) {
   return true;
 }
 
-// ===== 匹配 FAQ =====
+// ===== 飞书 API =====
 async function matchFAQ(text, module) {
   const token = await getTenantToken();
   if (!token) return null;
@@ -207,12 +228,11 @@ async function matchFAQ(text, module) {
     }
     return bestMatch;
   } catch (e) {
-    console.error('[matchFAQ] error:', e);
+    console.error('[matchFAQ]', e);
     return null;
   }
 }
 
-// ===== 算薪按门店查 BP =====
 async function lookupBPByStore(storeName) {
   if (!storeName) return null;
   const token = await getTenantToken();
@@ -234,16 +254,14 @@ async function lookupBPByStore(storeName) {
     }
     return null;
   } catch (e) {
-    console.error('[lookupBPByStore] error:', e);
+    console.error('[lookupBPByStore]', e);
     return null;
   }
 }
 
-// ===== 写入转人工记录 =====
 async function recordHandoff(chatId, senderId, module, storeName, bp, question) {
   const token = await getTenantToken();
   if (!token) return;
-
   try {
     await fetch(`${FEISHU_API}/bitable/v1/apps/${BITABLE_APP_TOKEN}/tables/${TABLES.handoff}/records`, {
       method: 'POST',
@@ -265,16 +283,18 @@ async function recordHandoff(chatId, senderId, module, storeName, bp, question) 
       }),
     });
   } catch (e) {
-    console.error('[recordHandoff] error:', e);
+    console.error('[recordHandoff]', e);
   }
 }
 
-// ===== 发送消息 =====
 async function sendText(chatId, text) {
   const token = await getTenantToken();
-  if (!token) return;
+  if (!token) {
+    console.error('[sendText] no token');
+    return;
+  }
   try {
-    await fetch(`${FEISHU_API}/im/v1/messages?receive_id_type=chat_id`, {
+    const resp = await fetch(`${FEISHU_API}/im/v1/messages?receive_id_type=chat_id`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -286,18 +306,22 @@ async function sendText(chatId, text) {
         content: JSON.stringify({ text }),
       }),
     });
+    const data = await resp.json();
+    if (data.code !== 0) console.error('[sendText] feishu error:', data);
   } catch (e) {
-    console.error('[sendText] error:', e);
+    console.error('[sendText]', e);
   }
 }
 
-// ===== 飞书 tenant_access_token =====
 let cachedToken = null;
 let cachedTokenTime = 0;
 async function getTenantToken() {
   const APP_ID = process.env.APP_ID;
   const APP_SECRET = process.env.APP_SECRET;
-  if (!APP_ID || !APP_SECRET) return null;
+  if (!APP_ID || !APP_SECRET) {
+    console.error('[getTenantToken] missing env');
+    return null;
+  }
 
   if (cachedToken && Date.now() - cachedTokenTime < 5400 * 1000) {
     return cachedToken;
@@ -310,12 +334,15 @@ async function getTenantToken() {
       body: JSON.stringify({ app_id: APP_ID, app_secret: APP_SECRET }),
     });
     const data = await resp.json();
-    if (data.code !== 0 || !data.tenant_access_token) return null;
+    if (data.code !== 0 || !data.tenant_access_token) {
+      console.error('[getTenantToken] feishu error:', data);
+      return null;
+    }
     cachedToken = data.tenant_access_token;
     cachedTokenTime = Date.now();
     return cachedToken;
   } catch (e) {
-    console.error('[getTenantToken] error:', e);
+    console.error('[getTenantToken]', e);
     return null;
   }
 }
